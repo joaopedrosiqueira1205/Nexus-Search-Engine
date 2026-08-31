@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>Nexus Search</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f7f8fa;
+      color: #202124;
+    }
+
+    header {
+      background: #ffffff;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 18px 24px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .topo {
+      max-width: 900px;
+      margin: 0 auto;
+      display: flex;
+      gap: 20px;
+      align-items: center;
+    }
+
+    .logo {
+      font-size: 30px;
+      font-weight: bold;
+      color: #111827;
+      white-space: nowrap;
+    }
+
+    .search-area {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      background: #ffffff;
+      border: 1px solid #d1d5db;
+      border-radius: 28px;
+      padding: 4px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    }
+
+    .search-area input {
+      flex: 1;
+      border: none;
+      outline: none;
+      font-size: 17px;
+      padding: 13px 16px;
+      background: transparent;
+    }
+
+    .search-area button {
+      border: none;
+      background: #111827;
+      color: white;
+      padding: 12px 20px;
+      border-radius: 24px;
+      cursor: pointer;
+      font-size: 15px;
+    }
+
+    .search-area button:hover {
+      background: #374151;
+    }
+
+    main {
+      max-width: 900px;
+      margin: 30px auto;
+      padding: 0 24px;
+    }
+
+    #status {
+      color: #6b7280;
+      margin-bottom: 22px;
+      font-size: 14px;
+    }
+
+    .resultado {
+      background: white;
+      padding: 20px;
+      margin-bottom: 16px;
+      border-radius: 12px;
+      border: 1px solid #e5e7eb;
+    }
+
+    .resultado:hover {
+      box-shadow: 0 4px 18px rgba(0,0,0,0.08);
+    }
+
+    .resultado-url {
+      font-size: 13px;
+      color: #047857;
+      margin-bottom: 6px;
+      word-break: break-all;
+    }
+
+    .resultado h2 {
+      margin: 0 0 8px 0;
+      font-size: 21px;
+      font-weight: 500;
+    }
+
+    .resultado h2 a {
+      color: #1a0dab;
+      text-decoration: none;
+    }
+
+    .resultado h2 a:hover {
+      text-decoration: underline;
+    }
+
+    .resultado p {
+      margin: 0;
+      line-height: 1.5;
+      color: #4b5563;
+    }
+
+    .score {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #9ca3af;
+    }
+
+    .vazio {
+      background: white;
+      border: 1px solid #e5e7eb;
+      padding: 24px;
+      border-radius: 12px;
+      color: #6b7280;
+    }
+
+    .loading {
+      color: #6b7280;
+    }
+
+    @media (max-width: 650px) {
+      .topo {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .logo {
+        text-align: center;
+      }
+
+      .search-area {
+        width: 100%;
+      }
+
+      main {
+        padding: 0 14px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <header>
+    <div class="topo">
+
+      <div class="logo">
+        Nexus
+      </div>
+
+      <div class="search-area">
+
+        <input
+          id="pesquisa"
+          type="text"
+          placeholder="Pesquise no índice Nexus..."
+          autocomplete="off"
+        />
+
+        <button id="botaoPesquisar">
+          Pesquisar
+        </button>
+
+      </div>
+
+    </div>
+  </header>
+
+  <main>
+
+    <div id="status">
+      Digite alguma coisa para pesquisar.
+    </div>
+
+    <div id="resultados"></div>
+
+  </main>
+
+  <script>
+
+    const campo =
+      document.getElementById("pesquisa");
+
+    const botao =
+      document.getElementById("botaoPesquisar");
+
+    const resultados =
+      document.getElementById("resultados");
+
+    const status =
+      document.getElementById("status");
+
+    function escaparHtml(texto) {
+
+      return String(texto)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    async function pesquisar() {
+
+      const texto =
+        campo.value.trim();
+
+      if (!texto) {
+
+        status.textContent =
+          "Digite alguma coisa para pesquisar.";
+
+        resultados.innerHTML = "";
+
+        return;
+      }
+
+      status.textContent =
+        `Pesquisando por "${texto}"...`;
+
+      resultados.innerHTML =
+        '<div class="loading">Pesquisando...</div>';
+
+      try {
+
+        const inicio =
+          performance.now();
+
+        const resposta =
+          await fetch(
+            "/api/search?q=" +
+            encodeURIComponent(texto)
+          );
+
+        const dados =
+          await resposta.json();
+
+        const fim =
+          performance.now();
+
+        if (!resposta.ok) {
+          throw new Error(
+            dados.error ||
+            "Erro na pesquisa."
+          );
+        }
+
+        const tempo =
+          Math.round(fim - inicio);
+
+        resultados.innerHTML = "";
+
+        status.textContent =
+          `${dados.total} resultado(s) em ${tempo} ms`;
+
+        if (
+          !dados.results ||
+          dados.results.length === 0
+        ) {
+
+          resultados.innerHTML = `
+            <div class="vazio">
+              Nenhum resultado encontrado para
+              <strong>${escaparHtml(texto)}</strong>.
+            </div>
+          `;
+
+          return;
+        }
+
+        for (
+          const resultado of dados.results
+        ) {
+
+          const div =
+            document.createElement("div");
+
+          div.className =
+            "resultado";
+
+          const descricao =
+            resultado.description ||
+            "Sem descrição disponível.";
+
+          div.innerHTML = `
+            <div class="resultado-url">
+              ${escaparHtml(resultado.url)}
+            </div>
+
+            <h2>
+              <a
+                href="${escaparHtml(resultado.url)}"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                ${escaparHtml(resultado.title)}
+              </a>
+            </h2>
+
+            <p>
+              ${escaparHtml(descricao)}
+            </p>
+
+            <div class="score">
+              Relevância Nexus:
+              ${escaparHtml(resultado.score)}
+            </div>
+          `;
+
+          resultados.appendChild(div);
+        }
+
+      } catch (erro) {
+
+        console.error(erro);
+
+        status.textContent =
+          "Erro ao pesquisar.";
+
+        resultados.innerHTML = `
+          <div class="vazio">
+            O Nexus não conseguiu realizar a pesquisa.
+          </div>
+        `;
+      }
+    }
+
+    botao.addEventListener(
+      "click",
+      pesquisar
+    );
+
+    campo.addEventListener(
+      "keydown",
+      (evento) => {
+
+        if (
+          evento.key === "Enter"
+        ) {
+          pesquisar();
+        }
+      }
+    );
+
+  </script>
+
+</body>
+</html>
