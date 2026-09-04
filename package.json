@@ -1,17 +1,25 @@
 {
-  "name": "nexus",
+  "name": "nexus-search-engine",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Motor de pesquisa Nexus",
+  "main": "dist/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "crawl": "tsx src/crawler.ts",
+    "index": "tsx src/indexer.ts",
+    "build-index": "tsx src/build.ts",
+    "search": "tsx src/search.ts"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
+  "keywords": [
+    "search",
+    "engine",
+    "nexus"
+  ],
+  "author": "joaopedrosiqueira1205",
+  "license": "MIT",
   "dependencies": {
-    "cheerio": "^1.2.0",
+    "cheerio": "^1.1.2",
     "express": "^5.2.1"
   },
   "devDependencies": {
