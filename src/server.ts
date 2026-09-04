@@ -10,6 +10,7 @@ type IndexedDocument = {
   url: string;
   title: string;
   description: string;
+  content?: string;
   wordCount: number;
   terms: Record<string, number>;
 };
@@ -52,6 +53,61 @@ function tokenize(text: string) {
     .filter((word) => word.length >= 2);
 }
 
+function createSnippet(
+  document: IndexedDocument,
+  queryTerms: string[]
+) {
+  const source =
+    document.content?.trim() ||
+    document.description.trim();
+
+  if (!source) {
+    return "Sem descrição disponível.";
+  }
+
+  const normalizedSource =
+    normalizeText(source);
+
+  let position = -1;
+
+  for (const term of queryTerms) {
+    const found =
+      normalizedSource.indexOf(term);
+
+    if (
+      found >= 0 &&
+      (position < 0 || found < position)
+    ) {
+      position = found;
+    }
+  }
+
+  if (position < 0) {
+    return source.slice(0, 240);
+  }
+
+  const start = Math.max(
+    0,
+    position - 90
+  );
+
+  const end = Math.min(
+    source.length,
+    position + 190
+  );
+
+  const snippet = source
+    .slice(start, end)
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return (
+    (start > 0 ? "… " : "") +
+    snippet +
+    (end < source.length ? " …" : "")
+  );
+}
+
 async function loadIndex(): Promise<NexusIndex> {
   const file = await readFile(
     "data/index.json",
@@ -61,15 +117,6 @@ async function loadIndex(): Promise<NexusIndex> {
   return JSON.parse(file) as NexusIndex;
 }
 
-/*
-  BM25 considera:
-
-  - frequência da palavra na página;
-  - raridade da palavra no índice;
-  - tamanho da página;
-  - tamanho médio dos documentos.
-*/
-
 function calculateBm25Score(
   document: IndexedDocument,
   queryTerms: string[],
@@ -78,7 +125,6 @@ function calculateBm25Score(
 ) {
   const k1 = 1.5;
   const b = 0.75;
-
   let score = 0;
 
   for (const term of queryTerms) {
@@ -109,7 +155,7 @@ function calculateBm25Score(
         )
       );
 
-    const lengthNormalization =
+    const normalizedLength =
       frequency +
       k1 *
       (
@@ -128,7 +174,7 @@ function calculateBm25Score(
         frequency *
         (k1 + 1)
       ) /
-      lengthNormalization;
+      normalizedLength;
   }
 
   return score;
@@ -143,12 +189,10 @@ app.get(
       res.json({
         name: "Nexus",
         status: "online",
-        version: "0.7.0",
+        version: "0.8.0",
         ranking: "BM25",
-        searchEngine: "Nexus Index",
         documents: index.totalDocuments,
-        terms: index.totalTerms,
-        indexVersion: index.version
+        terms: index.totalTerms
       });
     } catch {
       res.status(500).json({
@@ -179,16 +223,16 @@ app.get(
       const index = await loadIndex();
       const queryTerms = tokenize(query);
 
-      const totalDocumentLength =
+      const totalLength =
         index.documents.reduce(
           (total, document) =>
             total + document.wordCount,
           0
         );
 
-      const averageDocumentLength =
+      const averageLength =
         index.documents.length > 0
-          ? totalDocumentLength /
+          ? totalLength /
             index.documents.length
           : 1;
 
@@ -199,15 +243,17 @@ app.get(
               document,
               queryTerms,
               index.documents,
-              averageDocumentLength
+              averageLength
             );
 
           return {
             id: document.id,
             title: document.title,
             url: document.url,
-            description:
-              document.description,
+            description: createSnippet(
+              document,
+              queryTerms
+            ),
             score: Number(
               score.toFixed(4)
             )
@@ -242,17 +288,13 @@ app.get(
 app.listen(PORT, () => {
   console.log("");
   console.log("==============================");
-  console.log("       NEXUS SEARCH 0.7");
+  console.log("       NEXUS SEARCH 0.8");
   console.log("==============================");
   console.log("");
   console.log(
     `Servidor: http://localhost:${PORT}`
   );
-  console.log(
-    `Status: http://localhost:${PORT}/api/health`
-  );
-  console.log(
-    "Ranking: BM25"
-  );
+  console.log("Ranking: BM25");
+  console.log("Trechos: ativados");
   console.log("");
 });
