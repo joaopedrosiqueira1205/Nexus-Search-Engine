@@ -5,10 +5,6 @@ import { readFile } from "fs/promises";
 const app = express();
 const PORT = 3000;
 
-// ==========================================
-// TIPOS DO ÍNDICE
-// ==========================================
-
 type IndexedDocument = {
   id: string;
   url: string;
@@ -26,10 +22,6 @@ type NexusIndex = {
   documents: IndexedDocument[];
 };
 
-// ==========================================
-// CONFIGURAÇÃO
-// ==========================================
-
 app.use(express.json());
 
 app.use(
@@ -37,10 +29,6 @@ app.use(
     path.join(process.cwd(), "public")
   )
 );
-
-// ==========================================
-// NORMALIZAÇÃO
-// ==========================================
 
 function normalizeText(text: string) {
   return text
@@ -53,76 +41,116 @@ function normalizeText(text: string) {
 }
 
 function tokenize(text: string) {
-  return normalizeText(text)
+  const normalized = normalizeText(text);
+
+  if (!normalized) {
+    return [];
+  }
+
+  return normalized
     .split(" ")
     .filter((word) => word.length >= 2);
 }
 
-// ==========================================
-// CARREGAR ÍNDICE
-// ==========================================
-
 async function loadIndex(): Promise<NexusIndex> {
-
   const file = await readFile(
     "data/index.json",
     "utf-8"
   );
 
-  return JSON.parse(file);
+  return JSON.parse(file) as NexusIndex;
 }
 
-// ==========================================
-// RANKING
-// ==========================================
+/*
+  BM25 considera:
 
-function calculateScore(
+  - frequência da palavra na página;
+  - raridade da palavra no índice;
+  - tamanho da página;
+  - tamanho médio dos documentos.
+*/
+
+function calculateBm25Score(
   document: IndexedDocument,
-  queryTerms: string[]
+  queryTerms: string[],
+  documents: IndexedDocument[],
+  averageDocumentLength: number
 ) {
+  const k1 = 1.5;
+  const b = 0.75;
 
   let score = 0;
 
   for (const term of queryTerms) {
-
     const frequency =
       document.terms[term] || 0;
 
-    score += frequency;
+    if (frequency === 0) {
+      continue;
+    }
+
+    const documentsWithTerm =
+      documents.filter(
+        (item) =>
+          (item.terms[term] || 0) > 0
+      ).length;
+
+    const inverseDocumentFrequency =
+      Math.log(
+        1 +
+        (
+          documents.length -
+          documentsWithTerm +
+          0.5
+        ) /
+        (
+          documentsWithTerm +
+          0.5
+        )
+      );
+
+    const lengthNormalization =
+      frequency +
+      k1 *
+      (
+        1 -
+        b +
+        b *
+        (
+          document.wordCount /
+          averageDocumentLength
+        )
+      );
+
+    score +=
+      inverseDocumentFrequency *
+      (
+        frequency *
+        (k1 + 1)
+      ) /
+      lengthNormalization;
   }
 
   return score;
 }
 
-// ==========================================
-// STATUS
-// ==========================================
-
 app.get(
   "/api/health",
   async (_req, res) => {
-
     try {
-
-      const index =
-        await loadIndex();
+      const index = await loadIndex();
 
       res.json({
         name: "Nexus",
         status: "online",
-        version: "0.6.0",
-        searchEngine:
-          "Nexus Index",
-        documents:
-          index.totalDocuments,
-        terms:
-          index.totalTerms,
-        indexVersion:
-          index.version
+        version: "0.7.0",
+        ranking: "BM25",
+        searchEngine: "Nexus Index",
+        documents: index.totalDocuments,
+        terms: index.totalTerms,
+        indexVersion: index.version
       });
-
     } catch {
-
       res.status(500).json({
         name: "Nexus",
         status: "index-error"
@@ -131,21 +159,14 @@ app.get(
   }
 );
 
-// ==========================================
-// PESQUISA
-// ==========================================
-
 app.get(
   "/api/search",
   async (req, res) => {
-
-    const query =
-      String(
-        req.query.q || ""
-      ).trim();
+    const query = String(
+      req.query.q || ""
+    ).trim();
 
     if (!query) {
-
       res.status(400).json({
         error:
           "Digite algo para pesquisar."
@@ -155,117 +176,83 @@ app.get(
     }
 
     try {
+      const index = await loadIndex();
+      const queryTerms = tokenize(query);
 
-      const index =
-        await loadIndex();
+      const totalDocumentLength =
+        index.documents.reduce(
+          (total, document) =>
+            total + document.wordCount,
+          0
+        );
 
-      const queryTerms =
-        tokenize(query);
+      const averageDocumentLength =
+        index.documents.length > 0
+          ? totalDocumentLength /
+            index.documents.length
+          : 1;
 
-      const results =
-        index.documents
-          .map((document) => {
+      const results = index.documents
+        .map((document) => {
+          const score =
+            calculateBm25Score(
+              document,
+              queryTerms,
+              index.documents,
+              averageDocumentLength
+            );
 
-            const score =
-              calculateScore(
-                document,
-                queryTerms
-              );
-
-            return {
-              id:
-                document.id,
-
-              title:
-                document.title,
-
-              url:
-                document.url,
-
-              description:
-                document.description,
-
-              score
-            };
-          })
-          .filter(
-            (result) =>
-              result.score > 0
-          )
-          .sort(
-            (a, b) =>
-              b.score - a.score
-          )
-          .slice(0, 20);
+          return {
+            id: document.id,
+            title: document.title,
+            url: document.url,
+            description:
+              document.description,
+            score: Number(
+              score.toFixed(4)
+            )
+          };
+        })
+        .filter(
+          (result) => result.score > 0
+        )
+        .sort(
+          (a, b) => b.score - a.score
+        )
+        .slice(0, 20);
 
       res.json({
-        engine:
-          "Nexus",
-
+        engine: "Nexus",
+        ranking: "BM25",
         query,
-
-        total:
-          results.length,
-
+        total: results.length,
         results
       });
-
-    } catch (error: any) {
-
+    } catch (error) {
       console.error(error);
 
       res.status(500).json({
         error:
-          "O Nexus não conseguiu pesquisar o índice.",
-
-        details:
-          error?.message ||
-          String(error)
+          "O Nexus não conseguiu pesquisar o índice."
       });
     }
   }
 );
 
-// ==========================================
-// INICIAR SERVIDOR
-// ==========================================
-
-app.listen(
-  PORT,
-  () => {
-
-    console.log("");
-    console.log(
-      "================================"
-    );
-
-    console.log(
-      "       NEXUS SEARCH 0.6"
-    );
-
-    console.log(
-      "================================"
-    );
-
-    console.log("");
-
-    console.log(
-      `Servidor: http://localhost:${PORT}`
-    );
-
-    console.log(
-      `Status: http://localhost:${PORT}/api/health`
-    );
-
-    console.log(
-      `Pesquisa: http://localhost:${PORT}/api/search?q=example+domain`
-    );
-
-    console.log("");
-    console.log(
-      "Motor: NEXUS INDEX"
-    );
-
-    console.log("");
-  }
-);
+app.listen(PORT, () => {
+  console.log("");
+  console.log("==============================");
+  console.log("       NEXUS SEARCH 0.7");
+  console.log("==============================");
+  console.log("");
+  console.log(
+    `Servidor: http://localhost:${PORT}`
+  );
+  console.log(
+    `Status: http://localhost:${PORT}/api/health`
+  );
+  console.log(
+    "Ranking: BM25"
+  );
+  console.log("");
+});
