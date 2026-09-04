@@ -1,99 +1,108 @@
-import { spawn } from "child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 
-const targetUrl = process.argv[2];
+const SITES_FILE = path.join(process.cwd(), "sites.txt");
 
-if (!targetUrl) {
-  console.log("");
-  console.log("Uso:");
-  console.log("npx tsx src/build.ts https://example.com");
-  console.log("");
-  process.exit(1);
-}
+function loadSites(): string[] {
+  const commandSites = process.argv.slice(2);
+  let fileSites: string[] = [];
 
-function run(command: string, args: string[]) {
-  return new Promise<void>((resolve, reject) => {
-    console.log("");
-    console.log("================================");
-    console.log(`Executando: ${command} ${args.join(" ")}`);
-    console.log("================================");
-    console.log("");
+  if (fs.existsSync(SITES_FILE)) {
+    fileSites = fs
+      .readFileSync(SITES_FILE, "utf-8")
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(line => line.length > 0 && !line.startsWith("#"));
+  }
 
-    const child = spawn(
-      command,
-      args,
-      {
-        stdio: "inherit",
-        shell: true
-      }
-    );
+  const sites = [...new Set([...fileSites, ...commandSites])];
 
-    child.on("error", (error) => {
-      reject(error);
-    });
+  return sites.filter(site => {
+    try {
+      const url = new URL(site);
 
-    child.on("exit", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(
-          new Error(
-            `Processo terminou com código ${code}`
-          )
-        );
-      }
-    });
+      return (
+        url.protocol === "http:" ||
+        url.protocol === "https:"
+      );
+    } catch {
+      console.log(`URL inválida ignorada: ${site}`);
+      return false;
+    }
   });
 }
 
-async function build() {
-  console.log("");
-  console.log("================================");
-  console.log("       NEXUS BUILD 0.1");
-  console.log("================================");
-  console.log("");
-  console.log(`Site: ${targetUrl}`);
+function runScript(script: string, args: string[] = []) {
+  const tsxCli = path.join(
+    process.cwd(),
+    "node_modules",
+    "tsx",
+    "dist",
+    "cli.mjs"
+  );
+
+  const result = spawnSync(
+    process.execPath,
+    [tsxCli, script, ...args],
+    {
+      stdio: "inherit",
+      shell: false
+    }
+  );
+
+  if (result.error) {
+    throw result.error;
+  }
+
+  if (result.status !== 0) {
+    throw new Error(`Falha ao executar ${script}`);
+  }
+}
+
+function main() {
+  const sites = loadSites();
+
+  if (sites.length === 0) {
+    console.log("Nenhum site encontrado.");
+    console.log("Adicione endereços no arquivo sites.txt.");
+    process.exit(1);
+  }
+
+  console.log("==============================");
+  console.log("       NEXUS BUILD 1.0");
+  console.log("==============================");
+  console.log(`Sites iniciais: ${sites.length}`);
+
+  for (const site of sites) {
+    console.log(`- ${site}`);
+  }
 
   try {
-    await run(
-      "npx",
-      [
-        "tsx",
-        "src/crawler.ts",
-        targetUrl
-      ]
-    );
+    console.log("\nIniciando crawler...");
+    runScript("src/crawler.ts", sites);
 
-    await run(
-      "npx",
-      [
-        "tsx",
-        "src/indexer.ts"
-      ]
-    );
+    console.log("\nIniciando indexador...");
+    runScript("src/indexer.ts");
 
-    console.log("");
-    console.log("================================");
+    console.log("\n==============================");
     console.log("       BUILD FINALIZADO");
-    console.log("================================");
-    console.log("");
+    console.log("==============================");
     console.log("Crawler: OK");
     console.log("Indexador: OK");
-    console.log("");
     console.log("Arquivos atualizados:");
     console.log("data/pages.json");
     console.log("data/index.json");
-    console.log("");
-
-  } catch (error: any) {
-    console.error("");
-    console.error("BUILD FALHOU");
+  } catch (error) {
+    console.error("\nBUILD INTERROMPIDO");
     console.error(
-      error?.message || error
+      error instanceof Error
+        ? error.message
+        : error
     );
-    console.error("");
 
     process.exit(1);
   }
 }
 
-build();
+main();

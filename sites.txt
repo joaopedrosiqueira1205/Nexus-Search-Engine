@@ -1,0 +1,35 @@
+# Tecnologia e programação
+https://github.com
+https://developer.mozilla.org
+https://nodejs.org
+https://www.typescriptlang.org
+https://docs.python.org/pt-br/3/
+https://react.dev
+https://expressjs.com
+https://www.w3.org
+https://www.postgresql.org/docs/
+https://www.linux.org
+https://git-scm.com/docs
+https://docs.docker.com
+https://www.php.net/docs.php
+https://go.dev/doc/
+https://docs.oracle.com/en/java/
+
+# Enciclopédias e educação
+https://pt.wikipedia.org
+https://www.khanacademy.org
+https://www.scielo.br
+https://www.capes.gov.br
+
+# Governo e dados públicos
+https://www.gov.br
+https://www.ibge.gov.br
+https://www12.senado.leg.br
+https://www.camara.leg.br
+https://www.bcb.gov.br
+https://www.ipea.gov.br
+
+# Ciência e saúde
+https://www.fiocruz.br
+https://www.who.int
+https://www.nasa.gov
