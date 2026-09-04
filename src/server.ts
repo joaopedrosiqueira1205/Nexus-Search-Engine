@@ -11,7 +11,7 @@ type Document = {
 };
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const INDEX_FILE = path.join(process.cwd(), "data", "index.json");
 
 const requests = new Map<string, { count: number; start: number }>();
