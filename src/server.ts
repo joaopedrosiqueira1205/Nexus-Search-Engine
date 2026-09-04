@@ -1,300 +1,198 @@
 import express from "express";
-import path from "path";
-import { readFile } from "fs/promises";
+import fs from "node:fs";
+import path from "node:path";
+
+type Document = {
+  url: string;
+  title: string;
+  description?: string;
+  content?: string;
+  terms?: string[];
+};
 
 const app = express();
 const PORT = 3000;
+const INDEX_FILE = path.join(process.cwd(), "data", "index.json");
 
-type IndexedDocument = {
-  id: string;
-  url: string;
-  title: string;
-  description: string;
-  content?: string;
-  wordCount: number;
-  terms: Record<string, number>;
-};
+const requests = new Map<string, { count: number; start: number }>();
+const WINDOW_MS = 60_000;
+const MAX_REQUESTS = 60;
+const MAX_QUERY_LENGTH = 200;
 
-type NexusIndex = {
-  version: string;
-  createdAt: string;
-  totalDocuments: number;
-  totalTerms: number;
-  documents: IndexedDocument[];
-};
+function loadDocuments(): Document[] {
+  if (!fs.existsSync(INDEX_FILE)) return [];
 
-app.use(express.json());
+  const data = JSON.parse(fs.readFileSync(INDEX_FILE, "utf-8"));
 
-app.use(
-  express.static(
-    path.join(process.cwd(), "public")
-  )
-);
+  if (Array.isArray(data)) return data;
+  return data.documents || [];
+}
 
-function normalizeText(text: string) {
+function normalize(text: string): string[] {
   return text
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+    .split(/\s+/)
+    .filter(Boolean);
 }
 
-function tokenize(text: string) {
-  const normalized = normalizeText(text);
-
-  if (!normalized) {
-    return [];
-  }
-
-  return normalized
-    .split(" ")
-    .filter((word) => word.length >= 2);
-}
-
-function createSnippet(
-  document: IndexedDocument,
-  queryTerms: string[]
-) {
-  const source =
-    document.content?.trim() ||
-    document.description.trim();
-
-  if (!source) {
-    return "Sem descrição disponível.";
-  }
-
-  const normalizedSource =
-    normalizeText(source);
-
-  let position = -1;
-
-  for (const term of queryTerms) {
-    const found =
-      normalizedSource.indexOf(term);
-
-    if (
-      found >= 0 &&
-      (position < 0 || found < position)
-    ) {
-      position = found;
-    }
-  }
-
-  if (position < 0) {
-    return source.slice(0, 240);
-  }
-
-  const start = Math.max(
-    0,
-    position - 90
-  );
-
-  const end = Math.min(
-    source.length,
-    position + 190
-  );
-
-  const snippet = source
-    .slice(start, end)
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return (
-    (start > 0 ? "… " : "") +
-    snippet +
-    (end < source.length ? " …" : "")
-  );
-}
-
-async function loadIndex(): Promise<NexusIndex> {
-  const file = await readFile(
-    "data/index.json",
-    "utf-8"
-  );
-
-  return JSON.parse(file) as NexusIndex;
-}
-
-function calculateBm25Score(
-  document: IndexedDocument,
+function bm25(
+  document: Document,
   queryTerms: string[],
-  documents: IndexedDocument[],
-  averageDocumentLength: number
-) {
+  documents: Document[]
+): number {
+  const text = [
+    document.title,
+    document.description || "",
+    document.content || ""
+  ].join(" ");
+
+  const terms = normalize(text);
+  const averageLength =
+    documents.reduce((sum, item) => {
+      const itemText = [
+        item.title,
+        item.description || "",
+        item.content || ""
+      ].join(" ");
+      return sum + normalize(itemText).length;
+    }, 0) / Math.max(documents.length, 1);
+
   const k1 = 1.5;
   const b = 0.75;
+  const length = terms.length;
+
   let score = 0;
 
-  for (const term of queryTerms) {
-    const frequency =
-      document.terms[term] || 0;
+  for (const queryTerm of queryTerms) {
+    const frequency = terms.filter(term => term === queryTerm).length;
+    if (frequency === 0) continue;
 
-    if (frequency === 0) {
-      continue;
-    }
+    const containing = documents.filter(item => {
+      const itemText = [
+        item.title,
+        item.description || "",
+        item.content || ""
+      ].join(" ");
 
-    const documentsWithTerm =
-      documents.filter(
-        (item) =>
-          (item.terms[term] || 0) > 0
-      ).length;
+      return normalize(itemText).includes(queryTerm);
+    }).length;
 
-    const inverseDocumentFrequency =
-      Math.log(
-        1 +
-        (
-          documents.length -
-          documentsWithTerm +
-          0.5
-        ) /
-        (
-          documentsWithTerm +
-          0.5
-        )
-      );
+    const idf = Math.log(
+      1 + (documents.length - containing + 0.5) / (containing + 0.5)
+    );
 
-    const normalizedLength =
-      frequency +
-      k1 *
-      (
-        1 -
-        b +
-        b *
-        (
-          document.wordCount /
-          averageDocumentLength
-        )
-      );
+    const part =
+      (frequency * (k1 + 1)) /
+      (frequency + k1 * (1 - b + b * (length / averageLength)));
 
-    score +=
-      inverseDocumentFrequency *
-      (
-        frequency *
-        (k1 + 1)
-      ) /
-      normalizedLength;
+    score += idf * part;
   }
 
   return score;
 }
 
-app.get(
-  "/api/health",
-  async (_req, res) => {
-    try {
-      const index = await loadIndex();
+function createSnippet(document: Document, queryTerms: string[]): string {
+  const text = document.content || document.description || "Sem descrição.";
+  const lower = text.toLowerCase();
 
-      res.json({
-        name: "Nexus",
-        status: "online",
-        version: "0.8.0",
-        ranking: "BM25",
-        documents: index.totalDocuments,
-        terms: index.totalTerms
-      });
-    } catch {
-      res.status(500).json({
-        name: "Nexus",
-        status: "index-error"
-      });
-    }
+  const position = queryTerms
+    .map(term => lower.indexOf(term.toLowerCase()))
+    .filter(index => index >= 0)
+    .sort((a, b) => a - b)[0];
+
+  if (position === undefined) {
+    return text.slice(0, 280);
   }
-);
 
-app.get(
-  "/api/search",
-  async (req, res) => {
-    const query = String(
-      req.query.q || ""
-    ).trim();
+  const start = Math.max(0, position - 100);
+  const snippet = text.slice(start, start + 280);
 
-    if (!query) {
-      res.status(400).json({
-        error:
-          "Digite algo para pesquisar."
-      });
+  return `${start > 0 ? "... " : ""}${snippet}${
+    start + 280 < text.length ? " ..." : ""
+  }`;
+}
 
-      return;
-    }
+app.use(express.static(path.join(process.cwd(), "public")));
 
-    try {
-      const index = await loadIndex();
-      const queryTerms = tokenize(query);
+app.use((req, res, next) => {
+  const ip = req.ip || req.socket.remoteAddress || "unknown";
+  const now = Date.now();
+  const current = requests.get(ip);
 
-      const totalLength =
-        index.documents.reduce(
-          (total, document) =>
-            total + document.wordCount,
-          0
-        );
-
-      const averageLength =
-        index.documents.length > 0
-          ? totalLength /
-            index.documents.length
-          : 1;
-
-      const results = index.documents
-        .map((document) => {
-          const score =
-            calculateBm25Score(
-              document,
-              queryTerms,
-              index.documents,
-              averageLength
-            );
-
-          return {
-            id: document.id,
-            title: document.title,
-            url: document.url,
-            description: createSnippet(
-              document,
-              queryTerms
-            ),
-            score: Number(
-              score.toFixed(4)
-            )
-          };
-        })
-        .filter(
-          (result) => result.score > 0
-        )
-        .sort(
-          (a, b) => b.score - a.score
-        )
-        .slice(0, 20);
-
-      res.json({
-        engine: "Nexus",
-        ranking: "BM25",
-        query,
-        total: results.length,
-        results
-      });
-    } catch (error) {
-      console.error(error);
-
-      res.status(500).json({
-        error:
-          "O Nexus não conseguiu pesquisar o índice."
-      });
-    }
+  if (!current || now - current.start > WINDOW_MS) {
+    requests.set(ip, { count: 1, start: now });
+    return next();
   }
-);
+
+  current.count++;
+
+  if (current.count > MAX_REQUESTS) {
+    return res.status(429).json({
+      error: "Muitas requisições. Tente novamente em alguns segundos."
+    });
+  }
+
+  next();
+});
+
+app.get("/api/health", (_req, res) => {
+  res.json({
+    status: "online",
+    version: "0.9.0",
+    ranking: "BM25",
+    security: "rate limit ativo",
+    documents: loadDocuments().length
+  });
+});
+
+app.get("/api/search", (req, res) => {
+  const query = String(req.query.q || "")
+    .trim()
+    .slice(0, MAX_QUERY_LENGTH);
+
+  if (!query) {
+    return res.json({
+      query: "",
+      results: [],
+      total: 0
+    });
+  }
+
+  const documents = loadDocuments();
+  const queryTerms = normalize(query);
+
+  const results = documents
+    .map(document => ({
+      url: document.url,
+      title: document.title,
+      description: createSnippet(document, queryTerms),
+      score: bm25(document, queryTerms, documents)
+    }))
+    .filter(result => result.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 20)
+    .map(result => ({
+      ...result,
+      score: Number(result.score.toFixed(4))
+    }));
+
+  res.json({
+    query,
+    ranking: "BM25",
+    total: results.length,
+    results
+  });
+});
 
 app.listen(PORT, () => {
-  console.log("");
   console.log("==============================");
-  console.log("       NEXUS SEARCH 0.8");
+  console.log("       NEXUS SEARCH 0.9");
   console.log("==============================");
-  console.log("");
-  console.log(
-    `Servidor: http://localhost:${PORT}`
-  );
+  console.log(`Servidor: http://localhost:${PORT}`);
+  console.log(`Status: http://localhost:${PORT}/api/health`);
   console.log("Ranking: BM25");
-  console.log("Trechos: ativados");
-  console.log("");
+  console.log("Segurança: rate limit ativo");
 });
