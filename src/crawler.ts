@@ -1,5 +1,9 @@
 import * as cheerio from "cheerio";
-import { mkdir, writeFile } from "fs/promises";
+import {
+  mkdir,
+  readFile,
+  writeFile
+} from "fs/promises";
 import { createHash } from "crypto";
 
 type PageRecord = {
@@ -12,18 +16,15 @@ type PageRecord = {
   crawledAt: string;
 };
 
-const USER_AGENT = "NexusSearchBot/0.1";
-
-const MAX_PAGES = 20;
-
+const USER_AGENT = "NexusSearchBot/0.2";
+const MAX_PAGES_PER_SITE = 20;
 const DELAY_MS = 1000;
 
 const pages: PageRecord[] = [];
-
 const visited = new Set<string>();
 
 function wait(ms: number) {
-  return new Promise((resolve) =>
+  return new Promise<void>((resolve) =>
     setTimeout(resolve, ms)
   );
 }
@@ -36,9 +37,7 @@ function createId(url: string) {
 }
 
 function cleanText(text: string) {
-  return text
-    .replace(/\s+/g, " ")
-    .trim();
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function normalizeUrl(
@@ -46,10 +45,7 @@ function normalizeUrl(
   currentUrl: string
 ) {
   try {
-    const url = new URL(
-      href,
-      currentUrl
-    );
+    const url = new URL(href, currentUrl);
 
     if (
       url.protocol !== "http:" &&
@@ -61,9 +57,34 @@ function normalizeUrl(
     url.hash = "";
 
     return url.toString();
-
   } catch {
     return null;
+  }
+}
+
+async function loadExistingPages() {
+  try {
+    const file = await readFile(
+      "data/pages.json",
+      "utf-8"
+    );
+
+    const existing =
+      JSON.parse(file) as PageRecord[];
+
+    for (const page of existing) {
+      if (
+        !pages.some(
+          (item) => item.url === page.url
+        )
+      ) {
+        pages.push(page);
+      }
+    }
+  } catch {
+    console.log(
+      "Nenhum índice anterior encontrado."
+    );
   }
 }
 
@@ -71,22 +92,15 @@ async function crawlPage(
   url: string,
   allowedHost: string
 ) {
-
-  console.log("");
-  console.log("Visitando:");
-  console.log(url);
+  console.log(`Visitando: ${url}`);
 
   try {
-
-    const response = await fetch(
-      url,
-      {
-        headers: {
-          "User-Agent": USER_AGENT,
-          Accept: "text/html"
-        }
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "text/html"
       }
-    );
+    });
 
     if (!response.ok) {
       console.log(
@@ -97,106 +111,59 @@ async function crawlPage(
     }
 
     const contentType =
-      response.headers.get(
-        "content-type"
-      ) || "";
+      response.headers.get("content-type") || "";
 
-    if (
-      !contentType.includes("text/html")
-    ) {
-      console.log(
-        "Ignorado: não é HTML."
-      );
-
+    if (!contentType.includes("text/html")) {
+      console.log("Ignorado: não é HTML.");
       return [];
     }
 
-    const html =
-      await response.text();
+    const html = await response.text();
+    const $ = cheerio.load(html);
 
-    const $ =
-      cheerio.load(html);
-
-    // Remove elementos que não ajudam
-    // na pesquisa.
-
-    $("script").remove();
-    $("style").remove();
-    $("noscript").remove();
-    $("svg").remove();
+    $("script, style, noscript, svg").remove();
 
     const title =
-      cleanText(
-        $("title").first().text()
-      ) || "Sem título";
+      cleanText($("title").first().text()) ||
+      "Sem título";
 
-    const description =
-      cleanText(
-        $(
-          'meta[name="description"]'
-        ).attr("content") || ""
-      );
-
-    const text =
-      cleanText(
-        $("body").text()
-      ).slice(
-        0,
-        50000
-      );
-
-    const discoveredLinks:
-      string[] = [];
-
-    $("a[href]").each(
-      (_index, element) => {
-
-        const href =
-          $(element).attr("href");
-
-        if (!href) {
-          return;
-        }
-
-        const normalized =
-          normalizeUrl(
-            href,
-            url
-          );
-
-        if (!normalized) {
-          return;
-        }
-
-        try {
-
-          const parsed =
-            new URL(normalized);
-
-          // Por enquanto o crawler
-          // fica somente no site inicial.
-          if (
-            parsed.hostname !==
-            allowedHost
-          ) {
-            return;
-          }
-
-          if (
-            !discoveredLinks.includes(
-              normalized
-            )
-          ) {
-            discoveredLinks.push(
-              normalized
-            );
-          }
-
-        } catch {
-          return;
-        }
-      }
+    const description = cleanText(
+      $('meta[name="description"]')
+        .attr("content") || ""
     );
+
+    const text = cleanText(
+      $("body").text()
+    ).slice(0, 50000);
+
+    const discoveredLinks: string[] = [];
+
+    $("a[href]").each((_index, element) => {
+      const href = $(element).attr("href");
+
+      if (!href) {
+        return;
+      }
+
+      const normalized =
+        normalizeUrl(href, url);
+
+      if (!normalized) {
+        return;
+      }
+
+      const parsed = new URL(normalized);
+
+      if (parsed.hostname !== allowedHost) {
+        return;
+      }
+
+      if (
+        !discoveredLinks.includes(normalized)
+      ) {
+        discoveredLinks.push(normalized);
+      }
+    });
 
     pages.push({
       id: createId(url),
@@ -205,198 +172,160 @@ async function crawlPage(
       description,
       text,
       links: discoveredLinks,
-      crawledAt:
-        new Date().toISOString()
+      crawledAt: new Date().toISOString()
     });
 
+    console.log(`Título: ${title}`);
     console.log(
-      `Título: ${title}`
-    );
-
-    console.log(
-      `Texto: ${text.length} caracteres`
-    );
-
-    console.log(
-      `Links encontrados: ${discoveredLinks.length}`
+      `Links: ${discoveredLinks.length}`
     );
 
     return discoveredLinks;
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : String(error);
 
-  } catch (error: any) {
-
-    console.log(
-      "Erro ao visitar página:"
-    );
-
-    console.log(
-      error?.message ||
-      String(error)
-    );
+    console.log(`Erro: ${message}`);
 
     return [];
   }
 }
 
 async function startCrawler() {
+  const startUrls = process.argv.slice(2);
 
-  const startUrl =
-    process.argv[2];
-
-  if (!startUrl) {
-
-    console.log("");
+  if (startUrls.length === 0) {
     console.log(
-      "Você precisa informar um site."
-    );
-
-    console.log("");
-    console.log(
-      "Exemplo:"
+      "Informe pelo menos um site."
     );
 
     console.log(
-      "npx tsx src/crawler.ts https://example.com"
+      "Exemplo: npx tsx src/crawler.ts https://example.com"
     );
 
     return;
   }
 
-  let parsedStart: URL;
+  await loadExistingPages();
 
-  try {
-
-    parsedStart =
-      new URL(startUrl);
-
-  } catch {
-
-    console.log(
-      "URL inválida."
-    );
-
-    return;
-  }
-
-  const allowedHost =
-    parsedStart.hostname;
-
-  const queue: string[] = [
-    parsedStart.toString()
-  ];
+  const previousTotal = pages.length;
 
   console.log("");
+  console.log("==============================");
+  console.log("      NEXUS CRAWLER 0.2");
+  console.log("==============================");
   console.log(
-    "================================"
+    `Páginas existentes: ${previousTotal}`
   );
 
-  console.log(
-    "       NEXUS CRAWLER 0.1"
-  );
+  for (const input of startUrls) {
+    let startUrl: URL;
 
-  console.log(
-    "================================"
-  );
+    try {
+      startUrl = new URL(input);
 
-  console.log("");
-
-  console.log(
-    `Site: ${parsedStart.origin}`
-  );
-
-  console.log(
-    `Limite: ${MAX_PAGES} páginas`
-  );
-
-  console.log("");
-
-  while (
-    queue.length > 0 &&
-    pages.length < MAX_PAGES
-  ) {
-
-    const currentUrl =
-      queue.shift();
-
-    if (!currentUrl) {
+      if (
+        startUrl.protocol !== "http:" &&
+        startUrl.protocol !== "https:"
+      ) {
+        throw new Error(
+          "Somente HTTP e HTTPS são aceitos."
+        );
+      }
+    } catch {
+      console.log(`URL inválida: ${input}`);
       continue;
     }
 
-    if (
-      visited.has(currentUrl)
+    const allowedHost = startUrl.hostname;
+    const queue = [startUrl.toString()];
+    let collected = 0;
+
+    console.log("");
+    console.log(
+      `Coletando: ${startUrl.origin}`
+    );
+
+    while (
+      queue.length > 0 &&
+      collected < MAX_PAGES_PER_SITE
     ) {
-      continue;
-    }
+      const currentUrl = queue.shift();
 
-    visited.add(currentUrl);
+      if (
+        !currentUrl ||
+        visited.has(currentUrl)
+      ) {
+        continue;
+      }
 
-    const newLinks =
-      await crawlPage(
+      visited.add(currentUrl);
+
+      if (
+        pages.some(
+          (page) => page.url === currentUrl
+        )
+      ) {
+        continue;
+      }
+
+      const totalBefore = pages.length;
+
+      const links = await crawlPage(
         currentUrl,
         allowedHost
       );
 
-    for (
-      const link of newLinks
-    ) {
+      if (pages.length > totalBefore) {
+        collected++;
+      }
+
+      for (const link of links) {
+        if (
+          !visited.has(link) &&
+          !queue.includes(link) &&
+          !pages.some(
+            (page) => page.url === link
+          )
+        ) {
+          queue.push(link);
+        }
+      }
 
       if (
-        !visited.has(link) &&
-        !queue.includes(link)
+        queue.length > 0 &&
+        collected < MAX_PAGES_PER_SITE
       ) {
-        queue.push(link);
+        await wait(DELAY_MS);
       }
-    }
-
-    if (
-      pages.length <
-      MAX_PAGES
-    ) {
-      await wait(DELAY_MS);
     }
   }
 
-  await mkdir(
-    "data",
-    {
-      recursive: true
-    }
-  );
+  await mkdir("data", {
+    recursive: true
+  });
 
   await writeFile(
     "data/pages.json",
-    JSON.stringify(
-      pages,
-      null,
-      2
-    ),
+    JSON.stringify(pages, null, 2),
     "utf-8"
   );
 
   console.log("");
+  console.log("==============================");
+  console.log("      CRAWLER FINALIZADO");
+  console.log("==============================");
   console.log(
-    "================================"
+    `Páginas anteriores: ${previousTotal}`
   );
-
   console.log(
-    "       CRAWLER FINALIZADO"
+    `Novas páginas: ${pages.length - previousTotal}`
   );
-
   console.log(
-    "================================"
+    `Total salvo: ${pages.length}`
   );
-
-  console.log("");
-
-  console.log(
-    `Páginas salvas: ${pages.length}`
-  );
-
-  console.log(
-    "Arquivo: data/pages.json"
-  );
-
-  console.log("");
 }
 
 startCrawler();
